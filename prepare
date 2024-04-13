@@ -1,0 +1,75 @@
+#!/bin/bash
+
+set -e
+
+if [[ -n $1 ]]; then
+	ARCH=$1
+else
+	ARCH=x86_64
+fi
+if [ $# -ge 2 ]; then BOOTSTRAP_BIN=1; fi
+
+wget -q https://api.github.com/repos/$GITHUB_ACTOR/llvm-toolchain/releases/latest
+URL="$(grep browser_download_url latest | grep -o 'https://.*.xz' | sed '/musl\|uclibc/d')"
+VER=$(basename $URL)
+VER=${VER#llvm-}
+VER=${VER%.tar.xz}
+sed -i "s/%VERSION%/$VER/" build.sh
+echo "LLVM_VERSION=$VER" >> $GITHUB_OUTPUT
+echo "BUILD_DATE=$(date -u +%Y%m%d)" >> $GITHUB_OUTPUT
+
+if [[ $BOOTSTRAP_BIN ]]; then
+	if ! wget -q "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/llvm-mingw-rt-ucrt-$ARCH.tar.xz"
+	then
+		wget -q https://api.github.com/repos/mstorsjo/llvm-mingw/releases
+		DATE=$(grep name releases|grep -io "[0-9].* with LLVM $VER"|sed 's/with .*\|\s//g')
+		URL+=" $(grep browser_download_url releases|grep -o "http.*$DATE-ucrt-ubuntu-.*-x86_64.tar.xz")"
+	fi
+fi
+
+wget -nv -c https://github.com/$GITHUB_ACTOR/alfs-sysroot/releases/latest/download/rootfs.tar.xz{,.sha256} $URL
+rm -f releases latest; sha256sum -c rootfs.tar.xz.sha256 && sudo mkdir rootfs
+echo " -> Extracting the 'rootfs.tar.xz'..."
+sudo tar xf rootfs.tar.xz -C rootfs
+echo " -> Preparing Virtual Kernel File Systems..."
+sudo mkdir -pv rootfs/{dev,proc,sys,run,tmp}
+sudo mount -v --bind /dev rootfs/dev
+sudo mount -v --bind /dev/pts rootfs/dev/pts
+sudo mount -vt proc proc rootfs/proc
+sudo mount -vt sysfs sysfs rootfs/sys
+sudo mount -vt tmpfs tmpfs rootfs/run
+sudo mount -vt tmpfs tmpfs rootfs/tmp
+if [ -h rootfs/dev/shm ]; then sudo mkdir -pv rootfs/$(readlink rootfs/dev/shm); else sudo mount -vt tmpfs -o nosuid,nodev devshm rootfs/dev/shm; fi
+sudo bash -c "echo -e 'nameserver 1.1.1.1\nnameserver 8.8.8.8' >rootfs/etc/resolv.conf"
+sudo install -do $(id -u) -g $(id -g) rootfs/build
+
+TARGET=$ARCH-w64-mingw32
+for i in $URL; do
+	f=$(basename $i)
+	echo " -> Extracting the '$f'..."
+	if [[ $f != *-ucrt-ubuntu-* ]]; then
+		sudo tar xf $f -C rootfs
+	else
+		tar xf $f && sudo mkdir rootfs/usr/$TARGET
+		cd $(tar tf $f 2>/dev/null|head -1|sed 's@^./@@;s@/.*@@')
+		sudo cp -rL $TARGET/{include,lib} ../rootfs/usr/$TARGET
+		sudo cp -r lib/clang/${VER%%.*}/lib/windows ../rootfs/usr/lib/clang/${VER%%.*}/lib
+		cd ..
+	fi
+done
+if [ -f llvm-mingw-rt-ucrt-$ARCH.tar.xz ]; then
+	echo " -> Extracting the 'llvm-mingw-rt-ucrt-$ARCH.tar.xz'..."
+	sudo tar xf llvm-mingw-rt-ucrt-$ARCH.tar.xz -C rootfs
+fi
+
+if [[ $ARCH != i?86 && $ARCH != x86_64 ]]; then
+	sed -i 's/-mtune=[a-z0-9]\+\s//' envars.sh
+fi
+cp *.sh patches/*.patch rootfs/build
+
+install -m755 /dev/stdin ./chroot_run <<-"EOF"
+	sudo chroot rootfs \
+		/usr/bin/env -i HOME=/root \
+		TERM=$TERM PATH=/usr/bin:/usr/sbin \
+		/bin/bash --login -c "cd /build; $*"
+EOF

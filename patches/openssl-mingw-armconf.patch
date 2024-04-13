@@ -1,0 +1,33 @@
+--- a/Configurations/10-main.conf
++++ b/Configurations/10-main.conf
+@@ -1703,6 +1703,30 @@ my %targets = (
+         multilib         => "64",
+     },
+
++    "mingwarm" => {
++        inherit_from     => [ "mingw-common" ],
++        cflags           => "",
++        sys_id           => "MINGWARM",
++        bn_ops           => add("BN_LLONG"),
++        asm_arch         => 'arm',
++        uplink_arch      => 'armv7',
++        perlasm_scheme   => "win32",
++        shared_rcflag    => "",
++        multilib         => "-arm",
++    },
++
++    "mingwarm64" => {
++        inherit_from     => [ "mingw-common" ],
++        cflags           => "",
++        sys_id           => "MINGWARM64",
++        bn_ops           => add("SIXTY_FOUR_BIT"),
++        asm_arch         => 'aarch64',
++        uplink_arch      => 'armv8',
++        perlasm_scheme   => "win64",
++        shared_rcflag    => "",
++        multilib         => "-arm64",
++    },
++
+ #### UEFI
+     "UEFI" => {
+         inherit_from     => [ "BASE_unix" ],

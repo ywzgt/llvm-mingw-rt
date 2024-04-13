@@ -1,0 +1,141 @@
+name: llvm mingw
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      matrix:
+        arch: [i686, x86_64]
+        continue: [false]
+        include:
+          - arch: aarch64
+            continue: true
+          - arch: armv7
+            continue: true
+    continue-on-error: ${{ matrix.continue }}
+    runs-on: ubuntu-latest
+    outputs:
+      LLVM_VERSION: ${{ steps.generate-version.outputs.LLVM_VERSION }}
+      BUILD_DATE: ${{ steps.generate-version.outputs.BUILD_DATE }}
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    - name: Prepare
+      id: generate-version
+      run: ./prepare ${{ matrix.arch }}
+    - name: Bootstrap
+      run: ./chroot_run bash build.sh ${{ matrix.arch }} bootstrap
+    - name: Build pass1
+      run: ./chroot_run bash build.sh ${{ matrix.arch }}
+    - name: Build pass2
+      run: ./chroot_run bash build.sh ${{ matrix.arch }}
+    - name: Package
+      run: (cd rootfs/build/DEST; sudo tar cf - .|xz -T0) > llvm-mingw-rt-ucrt-${{ matrix.arch }}.tar.xz
+    - uses: actions/upload-artifact@v4
+      with:
+        name: mingw-ucrt-${{ matrix.arch }}
+        path: llvm-mingw-rt-*.tar.xz
+        retention-days: 3
+    - name: Setup tmate ssh session
+      if: failure()
+      uses: mxschmitt/action-tmate@v3
+      timeout-minutes: 30
+      with:
+        limit-access-to-actor: true
+
+  release:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        arch: [aarch64, armv7, i686, x86_64]
+    env:
+      LLVM_VERSION: ${{ needs.build.outputs.LLVM_VERSION }}
+      BUILD_DATE: ${{ needs.build.outputs.BUILD_DATE }}
+    steps:
+    - name: Download artifact ${{ matrix.arch }}
+      uses: actions/download-artifact@v4
+      with:
+        name: mingw-ucrt-${{ matrix.arch }}
+    - name: Upload to Releases
+      if: env.LLVM_VERSION != ''
+      uses: softprops/action-gh-release@v2
+      with:
+        body: LLVM ${{ env.LLVM_VERSION }}
+        tag_name: ${{ env.BUILD_DATE }}
+        files: llvm-mingw-rt-*.tar.xz
+        fail_on_unmatched_files: true
+
+  test:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    needs: [build, release]
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        arch: [aarch64, armv7, i686, x86_64]
+        build: [7z, ffmpeg, llvm, llvm-nightly, openssl]
+    env:
+      BUILD_DATE: ${{ needs.build.outputs.BUILD_DATE }}
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    - name: Prepare
+      run: ./prepare ${{ matrix.arch }} binary
+    - name: Build
+      run: ./chroot_run bash build.sh ${{ matrix.arch }} test ${{ matrix.build }}; [ ! -f rootfs/ENV ] || cat rootfs/ENV >> $GITHUB_ENV
+    - name: Package
+      if: env.PKG != ''
+      run: rm -f *.xz; (cd $PKG; sudo tar cf - .|xz -T0) > ${{ matrix.build }}${{ env.pkgver }}-${{ matrix.arch }}.tar.xz
+    - uses: actions/upload-artifact@v4
+      if: env.PKG != ''
+      with:
+        name: ${{ matrix.build }}-${{ matrix.arch }}
+        path: ${{ matrix.build }}-*.tar.xz
+        retention-days: 30
+        overwrite: true
+    - name: Upload to Releases
+      if: (matrix.build == 'llvm' || matrix.build == 'llvm-nightly') && env.PKG != ''
+      uses: softprops/action-gh-release@v2
+      with:
+        body: LLVM Project Windows binaries (*-pc-windows-msvc)
+        tag_name: ${{ env.BUILD_DATE }}-win
+        files: ${{ matrix.build }}${{ env.pkgver }}-${{ matrix.arch }}.tar.xz
+        fail_on_unmatched_files: true
+        prerelease: true
+    - name: Release artifacts x86
+      if: matrix.arch == 'i686' || matrix.arch == 'x86_64'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: artifacts
+        files: ${{ matrix.build }}*-${{ matrix.arch }}.tar.xz
+        fail_on_unmatched_files: true
+        prerelease: true
+    - name: Setup tmate ssh session
+      if: failure()
+      uses: mxschmitt/action-tmate@v3
+      timeout-minutes: 30
+
+  test-run:
+    runs-on: windows-latest
+    needs: test
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    - uses: msys2/setup-msys2@v2
+      with:
+        update: true
+        install: p7zip
+    - name: Run
+      run: ./test_run.sh
+    - name: Setup tmate ssh session
+      if: failure()
+      uses: mxschmitt/action-tmate@v3
+      timeout-minutes: 30
