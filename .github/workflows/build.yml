@@ -79,6 +79,11 @@ jobs:
       matrix:
         arch: [aarch64, armv7, i686, x86_64]
         build: [7z, ffmpeg, llvm, llvm-nightly, openssl]
+        exclude:
+          - arch: aarch64
+            build: 7z
+          - arch: armv7
+            build: 7z
     env:
       BUILD_DATE: ${{ needs.build.outputs.BUILD_DATE }}
     steps:
